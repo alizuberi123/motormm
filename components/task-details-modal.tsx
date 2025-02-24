@@ -9,13 +9,15 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 
 /**
- * Matches your DB: "Pending", "In Progress", "Completed".
- * We store them locally as "not-started", "in-progress", "completed".
+ * If your DB columns are:
+ *  - "Assigned_to" => "John Gay"
+ *  - Possibly "mechanic_id", etc.
+ *  - Then we read "Assigned_to" for the UI.
  */
 export interface DetailedRepairOrder {
   id: string
   created_at: string
-  status: string  // "Pending" | "In Progress" | "Completed"
+  status: string // "Pending" | "In Progress" | "Completed"
   customer_id: string
   repair_order_details?: Array<{
     id: string
@@ -26,10 +28,11 @@ export interface DetailedRepairOrder {
     cost?: string
     mileage?: string
     task_priority?: string
-    shop_staff?: {
-      staff_name: string
-    }
     description?: string
+
+    // IMPORTANT: EXACT same case as your console logs:
+    // If your logs say "Assigned_to": "John Gay", use Assigned_to here:
+    Assigned_to?: string
   }>
   customers?: {
     id: string
@@ -54,10 +57,13 @@ interface TaskDetailsModalProps {
 }
 
 export function TaskDetailsModal({ task: initialTask, onClose, onSave }: TaskDetailsModalProps) {
-  const [isEditing, setIsEditing] = useState(false)
+  console.log("TaskDetailsModal - initialTask:", initialTask)
+
+  // If you store "Assigned_to" in repair_order_details, let's read from the first row:
+  const firstDetail = initialTask.repair_order_details?.[0]
+  console.log("First Detail row =>", firstDetail)
 
   /**
-   * Map the DB status to local UI states:
    * "Pending" => "not-started"
    * "In Progress" => "in-progress"
    * "Completed" => "completed"
@@ -75,12 +81,6 @@ export function TaskDetailsModal({ task: initialTask, onClose, onSave }: TaskDet
     }
   }
 
-  /**
-   * Map local states to DB statuses:
-   * "not-started" => "Pending"
-   * "in-progress" => "In Progress"
-   * "completed" => "Completed"
-   */
   function mapLocalStatusToDb(local: "not-started" | "in-progress" | "completed"): string {
     switch (local) {
       case "not-started":
@@ -94,13 +94,12 @@ export function TaskDetailsModal({ task: initialTask, onClose, onSave }: TaskDet
     }
   }
 
-  // Convert the DB status to local
+  // Convert DB status => local
+  const [isEditing, setIsEditing] = useState(false)
   const [status, setStatus] = useState<"not-started" | "in-progress" | "completed">(
     mapDbStatusToLocal(initialTask.status)
   )
 
-  // We'll read from the first row in repair_order_details
-  const firstDetail = initialTask.repair_order_details?.[0]
   // The first vehicle from customers.customer_vehicles
   const firstVehicle = initialTask.customers?.customer_vehicles?.[0]
 
@@ -110,11 +109,8 @@ export function TaskDetailsModal({ task: initialTask, onClose, onSave }: TaskDet
   }`.trim()
 
   /**
-   * We'll store all fields needed for your modal in one object:
-   * - Customer name, contact
-   * - Vehicle info
-   * - Priority, assigned mechanic
-   * - Labour, parts, notes, cost, etc.
+   * We'll store the needed fields in formData:
+   *   - "Assigned To" => read from "Assigned_to" in your first detail row
    */
   const [formData, setFormData] = useState({
     customerName: initialTask.customers?.customer_name || "Unknown Customer",
@@ -130,14 +126,13 @@ export function TaskDetailsModal({ task: initialTask, onClose, onSave }: TaskDet
     parts: firstDetail?.parts || "",
     notes: firstDetail?.notes || "",
     totalAmount: firstDetail?.cost || "",
-    assignedToName: firstDetail?.shop_staff?.staff_name || "",
+    // KEY FIX: referencing your DB column "Assigned_to"
+    assignedToName: firstDetail?.Assigned_to || "",
     taskPriority: firstDetail?.task_priority || "Normal",
     detailDescription: firstDetail?.description || ""
   })
 
-  /**
-   * If parent re-renders with a new "initialTask", let's re-sync
-   */
+  // If parent updates the "initialTask", let's re-sync
   useEffect(() => {
     setStatus(mapDbStatusToLocal(initialTask.status))
     const d = initialTask.repair_order_details?.[0]
@@ -160,17 +155,15 @@ export function TaskDetailsModal({ task: initialTask, onClose, onSave }: TaskDet
       parts: d?.parts || "",
       notes: d?.notes || "",
       totalAmount: d?.cost || "",
-      assignedToName: d?.shop_staff?.staff_name || "",
+      // again: EXACT property name => "Assigned_to"
+      assignedToName: d?.Assigned_to || "",
       taskPriority: d?.task_priority || "Normal",
       detailDescription: d?.description || ""
     })
   }, [initialTask])
 
   /**
-   * When user clicks "Save Changes":
-   *  - Convert local -> DB for status
-   *  - Build updated record with your fields
-   *  - onSave(updated)
+   * handleSave => build updated record for onSave
    */
   function handleSave() {
     const dbStatus = mapLocalStatusToDb(status)
@@ -178,7 +171,7 @@ export function TaskDetailsModal({ task: initialTask, onClose, onSave }: TaskDet
     const updated: DetailedRepairOrder = {
       ...initialTask,
       status: dbStatus,
-      // If there's a first detail row
+      // If there's a detail row:
       repair_order_details: initialTask.repair_order_details?.length
         ? [
             {
@@ -189,11 +182,13 @@ export function TaskDetailsModal({ task: initialTask, onClose, onSave }: TaskDet
               notes: formData.notes,
               cost: formData.totalAmount,
               task_priority: formData.taskPriority,
-              description: formData.detailDescription
+              description: formData.detailDescription,
+              // If you want to write "assignedToName" back to DB,
+              // do so here:
+              // Assigned_to: formData.assignedToName
             }
           ]
         : [],
-      // Update the customers object
       customers: {
         ...initialTask.customers,
         customer_name: formData.customerName
@@ -237,7 +232,6 @@ export function TaskDetailsModal({ task: initialTask, onClose, onSave }: TaskDet
 
         {/* STATUS BUTTONS */}
         <div className="flex items-center gap-4 p-4 border-b border-[#222222]">
-          {/* No disabled={!isEditing} so the color can show. We gate the onClick with isEditing. */}
           <Button
             variant="ghost"
             className={`flex items-center gap-2 ${
@@ -293,7 +287,9 @@ export function TaskDetailsModal({ task: initialTask, onClose, onSave }: TaskDet
                   <div>
                     <Input
                       value={formData.customerName}
-                      onChange={(e) => isEditing && setFormData({ ...formData, customerName: e.target.value })}
+                      onChange={(e) =>
+                        isEditing && setFormData({ ...formData, customerName: e.target.value })
+                      }
                       placeholder="John Doe"
                       className="bg-transparent border-0 text-white text-xl font-semibold p-0 h-auto placeholder-white/70 mb-1"
                       readOnly={!isEditing}
@@ -404,7 +400,7 @@ export function TaskDetailsModal({ task: initialTask, onClose, onSave }: TaskDet
                     </div>
                   )}
                 </div>
-                {/* Assigned Mechanic */}
+                {/* ***HERE*** we display "Assigned_to" in the "Assigned To" input */}
                 <div className="space-y-1.5">
                   <Label className="text-gray-400">Assigned To</Label>
                   <Input

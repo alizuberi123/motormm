@@ -9,7 +9,8 @@ import { TasksTable } from "@/components/tasks-table"
 import { TaskStats } from "@/components/task-stats"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { WorkOrderForm } from "@/components/work-order-form"
-// --- IMPORTANT: import your new "DetailedRepairOrder" and modal
+
+// IMPORTANT: Import your "DetailedRepairOrder" and modal
 import { TaskDetailsModal, DetailedRepairOrder } from "@/components/task-details-modal"
 
 import { useTasks } from "@/contexts/tasks-context"
@@ -18,15 +19,15 @@ import { supabase } from "@/lib/supabase"
 
 export default function TasksPage() {
   const router = useRouter()
-
+  
   const [isWorkOrderFormOpen, setIsWorkOrderFormOpen] = useState(false)
-  // We'll store the *full* DB record in selectedTask, matching DetailedRepairOrder
+  // This holds the *full* DB record for the modal
   const [selectedTask, setSelectedTask] = useState<DetailedRepairOrder | null>(null)
 
-  // This is your simpler "Task" interface used for listing (with minimal fields).
-  // We get them from your tasks-context
+  // Minimal tasks for listing + stats come from your context
   const { tasks, setTasks } = useTasks()
 
+  // Check user + fetch tasks on mount
   useEffect(() => {
     checkUser()
   }, [])
@@ -35,13 +36,12 @@ export default function TasksPage() {
     const {
       data: { user },
     } = await supabase.auth.getUser()
-
     if (!user) {
       router.push("/login")
       return
     }
 
-    // Fetch shop_id for user
+    // Find shop_id for user
     const { data: userData, error: userErr } = await supabase
       .from("users")
       .select("shop_id")
@@ -49,20 +49,23 @@ export default function TasksPage() {
       .single()
 
     if (userErr || !userData?.shop_id) {
-      console.error("No shop_id found or error fetching user data:", userErr)
+      console.error("No shop_id found or error:", userErr)
       return
     }
 
-    // Load minimal tasks for listing
     await fetchTasks(userData.shop_id)
   }
 
   /**
-   * fetchTasks loads an array of minimal "Task" objects
-   * for the table & TaskStats. 
+   * Fetch minimal tasks for the table + stats
+   * Includes the 'shop_staff.staff_name' in the first detail row
+   * for display in the table's 'assignedTo' column if you want that.
    */
   async function fetchTasks(shopId: string) {
     try {
+      // If your relationship is named exactly `shop_staff`, use that:
+      // If it's named something else (like `shop_staff_by_mechanic_id`),
+      // then replace `shop_staff(*)` with that name.
       const { data, error } = await supabase
         .from("repair_orders")
         .select(`
@@ -74,9 +77,7 @@ export default function TasksPage() {
             notes,
             task_priority,
             mechanic_id,
-            shop_staff(
-              staff_name
-            )
+            shop_staff(*)
           ),
           customers(
             customer_vehicles(
@@ -101,10 +102,10 @@ export default function TasksPage() {
         return
       }
 
-      // Convert DB rows => minimal "Task" objects for listing
+      // Transform DB rows => minimal 'Task' for listing
       const transformed: Task[] = data.map((row: any) => {
         const detail = row.repair_order_details?.[0] || {}
-        const staff = detail.shop_staff?.staff_name || "Unassigned"
+        const staffName = detail.shop_staff?.staff_name || "Unassigned"
 
         const vehicleObj = row.customers?.customer_vehicles?.[0] || {}
         const vehicleStr =
@@ -120,13 +121,12 @@ export default function TasksPage() {
           minute: "2-digit",
         })
 
-        // We'll keep the DB status as-is: "Pending", "In Progress", or "Completed"
         return {
           id: row.id,
           title: detail.description || "Untitled",
-          assignedTo: staff,
+          assignedTo: staffName,
           time: timeStr,
-          status: row.status || "Pending",
+          status: row.status || "Pending", // "Pending", "In Progress", "Completed"
           difficulty: detail.task_priority || "",
           vehicle: vehicleStr,
           comments: detail.notes || "",
@@ -141,9 +141,7 @@ export default function TasksPage() {
   }
 
   /**
-   * Handle "ADD NEW TASK" button (the simpler flow).
-   * Usually, you'd do an insert into Supabase here or
-   * rely on your WorkOrderForm to do so.
+   * Minimal "Add Task" from the WorkOrderForm
    */
   const handleAddTask = (newTask: Task) => {
     setTasks((prev) => [...prev, newTask])
@@ -151,33 +149,40 @@ export default function TasksPage() {
   }
 
   /**
-   * When user clicks a row in the table, 
-   * we fetch the full record from the DB and open TaskDetailsModal 
-   * with "DetailedRepairOrder".
+   * When the user clicks a row in the table,
+   * fetch the *full* record (including shop_staff) 
+   * so we can show it in TaskDetailsModal.
    */
   async function handleTaskClick(minimalTask: Task) {
     try {
+      // CRITICAL: If your foreign key relationship is named something else,
+      // use that. E.g. `shop_staff_by_mechanic_id(*)`
       const { data, error } = await supabase
         .from("repair_orders")
         .select(`
           *,
-          repair_order_details(*, shop_staff(*)),
-          customers(*, customer_vehicles(*))
+          repair_order_details(
+            *,
+            shop_staff(*)
+          ),
+          customers(
+            *,
+            customer_vehicles(*)
+          )
         `)
         .eq("id", minimalTask.id)
         .single()
 
       if (error) {
-        console.error("Error fetching full repair_order:", error)
+        console.error("Error fetching full record:", error)
         return
       }
       if (!data) {
-        console.log("No data found for repair_order id:", minimalTask.id)
+        console.warn("No data found for repair_order id:", minimalTask.id)
         return
       }
 
-      // The "TaskDetailsModal" expects a "DetailedRepairOrder"
-      // We'll pass the Supabase row directly (it matches your interface).
+      // Now 'data.repair_order_details[0].shop_staff.staff_name' should exist
       setSelectedTask(data)
     } catch (err) {
       console.error("Error in handleTaskClick:", err)
@@ -185,26 +190,25 @@ export default function TasksPage() {
   }
 
   /**
-   * Close the modal
+   * Close the TaskDetailsModal
    */
   const handleCloseModal = () => {
     setSelectedTask(null)
   }
 
   /**
-   * When user hits "Save Changes" in TaskDetailsModal,
-   * we do the DB updates, then re-fetch tasks, or manually update them.
+   * Save changes from the detailed modal
    */
   async function handleSaveTask(updated: DetailedRepairOrder) {
     try {
-      // 1) Update main status in repair_orders
+      // Update 'repair_orders' main fields
       const { error: mainErr } = await supabase
         .from("repair_orders")
         .update({ status: updated.status })
         .eq("id", updated.id)
       if (mainErr) throw mainErr
 
-      // 2) Update first detail record if any
+      // Update the first detail row if present
       const detail = updated.repair_order_details?.[0]
       if (detail?.id) {
         const { error: detailErr } = await supabase
@@ -222,18 +226,16 @@ export default function TasksPage() {
         if (detailErr) throw detailErr
       }
 
-      // 3) Update customer name if changed
+      // Update the customer name if changed
       if (updated.customers?.id) {
         const { error: custErr } = await supabase
           .from("customers")
-          .update({
-            customer_name: updated.customers.customer_name,
-          })
+          .update({ customer_name: updated.customers.customer_name })
           .eq("id", updated.customers.id)
         if (custErr) throw custErr
       }
 
-      // 4) Update the first vehicle if changed
+      // Update the first vehicle if changed
       const veh = updated.customers?.customer_vehicles?.[0]
       if (veh?.id) {
         const { error: vehErr } = await supabase
@@ -249,36 +251,34 @@ export default function TasksPage() {
         if (vehErr) throw vehErr
       }
 
-      // Re-fetch the minimal tasks so the table & stats are updated
-      // Or you could do a local patch if you prefer.
+      // Re-fetch tasks so table + stats stay in sync
       const {
         data: { user },
       } = await supabase.auth.getUser()
       if (user) {
-        // re-fetch tasks for the correct shop
         const { data: userData } = await supabase
           .from("users")
           .select("shop_id")
           .eq("id", user.id)
           .single()
+
         if (userData?.shop_id) {
           await fetchTasks(userData.shop_id)
         }
       }
 
-      // Close the modal
       setSelectedTask(null)
     } catch (err) {
-      console.error("Error saving task details:", err)
+      console.error("Error saving task changes:", err)
     }
   }
 
   /**
-   * If the WorkOrderForm returns data, you can refresh or push it into tasks
+   * If the work order form returns data, handle it
    */
   const handleSaveWorkOrder = (data: any) => {
-    console.log("handleSaveWorkOrder => got data from form:", data)
-    // Possibly trigger a re-fetch or do an insert.
+    console.log("handleSaveWorkOrder => got data:", data)
+    // Possibly re-fetch tasks or push the new item
   }
 
   return (
@@ -313,7 +313,6 @@ export default function TasksPage() {
 
       {/* Main content */}
       <main className="flex-1 flex flex-col p-6 min-h-0">
-        {/* Page heading */}
         <div className="mb-8">
           <h1 className="text-4xl font-bold text-white flex items-center gap-2">
             <div className="w-1 h-8 bg-[#b22222]" />
@@ -321,10 +320,9 @@ export default function TasksPage() {
           </h1>
         </div>
 
-        {/* Stats: uses tasks from context */}
+        {/* Stats (uses tasks from context) */}
         <TaskStats />
 
-        {/* Table + "Add New Task" button */}
         <div className="mt-8 bg-[#1A1A1A] rounded-xl p-6">
           <div className="flex justify-between items-center mb-6">
             <h2 className="text-2xl font-bold text-white">Task List</h2>
@@ -335,14 +333,12 @@ export default function TasksPage() {
               <Plus className="mr-2 h-5 w-5" /> ADD NEW TASK
             </Button>
           </div>
-
-          {/* We pass tasks={tasks} so the table shows them */}
-          {/* We pass onTaskClick so that clicking a row fetches full details + opens modal */}
+          {/* Table that calls handleTaskClick on row click */}
           <TasksTable tasks={tasks} onTaskClick={handleTaskClick} />
         </div>
       </main>
 
-      {/* WorkOrderForm for adding new tasks */}
+      {/* Work Order Form (add new tasks) */}
       {isWorkOrderFormOpen && (
         <WorkOrderForm
           onClose={() => setIsWorkOrderFormOpen(false)}
@@ -351,7 +347,7 @@ export default function TasksPage() {
         />
       )}
 
-      {/* TaskDetailsModal: shows the full DB record (DetailedRepairOrder) */}
+      {/* Detailed modal for editing mechanic name, etc. */}
       {selectedTask && (
         <TaskDetailsModal
           task={selectedTask}

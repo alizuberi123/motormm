@@ -5,9 +5,9 @@ import {
   DndContext,
   DragEndEvent,
   DragOverlay,
-  closestCorners,
   KeyboardSensor,
   PointerSensor,
+  rectIntersection, // <-- CHANGED
   useSensor,
   useSensors,
 } from "@dnd-kit/core"
@@ -26,10 +26,7 @@ interface TaskBoardProps {
   onTaskClick: (task: Task) => void
 }
 
-/** 
- * Convert local UI status -> DB status strings.
- * "todo" => "Pending", "inProgress" => "In Progress", "done" => "Completed"
- */
+/** Convert local "todo|inProgress|done" => DB "Pending|In Progress|Completed" */
 function localStatusToDb(local: "todo" | "inProgress" | "done"): string {
   switch (local) {
     case "todo":
@@ -43,9 +40,7 @@ function localStatusToDb(local: "todo" | "inProgress" | "done"): string {
   }
 }
 
-/** 
- * Optional helper: map local status to color instantly 
- */
+/** Optional helper: map local status to a color */
 function getStatusColor(status: "todo" | "inProgress" | "done"): string {
   switch (status) {
     case "todo":
@@ -63,11 +58,10 @@ export function TaskBoard({
   tasks = { todo: [], inProgress: [], done: [] },
   onTaskClick,
 }: TaskBoardProps) {
-  // Local columns state so we can reorder tasks instantly
+  // Local columns for instant reorder
   const [columns, setColumns] = useState(tasks)
 
-  // If the parent’s tasks prop changes (e.g., after re-fetch),
-  // update our local columns to match
+  // Sync local columns if the parent tasks prop changes
   useEffect(() => {
     setColumns(tasks)
   }, [tasks])
@@ -76,15 +70,15 @@ export function TaskBoard({
     useSensor(PointerSensor),
     useSensor(KeyboardSensor, {
       coordinateGetter: sortableKeyboardCoordinates,
-    }),
+    })
   )
 
-  // For drag overlay reference
   const [activeId, setActiveId] = useState<string | null>(null)
 
-  // Find a task in local columns
   function findTaskAll(taskId: string): Task | undefined {
-    return [...columns.todo, ...columns.inProgress, ...columns.done].find((t) => t.id === taskId)
+    return [...columns.todo, ...columns.inProgress, ...columns.done].find(
+      (t) => t.id === taskId
+    )
   }
 
   function handleDragStart(event: any) {
@@ -93,6 +87,7 @@ export function TaskBoard({
 
   async function handleDragEnd(event: DragEndEvent) {
     const { active, over } = event
+    console.log("DRAG END: from:", active.id, " => over:", over?.id || "none") 
     if (!over) return
 
     const overId = over.id as string
@@ -102,16 +97,18 @@ export function TaskBoard({
 
     const currentTask = findTaskAll(active.id)
     if (overColumn && currentTask && currentTask.status !== overColumn) {
-      // 1) Update local columns so color changes instantly
+      // 1) Update local columns
       setColumns((prev) => ({
         ...prev,
-        [currentTask.status]: prev[currentTask.status].filter((t) => t.id !== currentTask.id),
+        [currentTask.status]: prev[currentTask.status].filter(
+          (t) => t.id !== currentTask.id
+        ),
         [overColumn]: [
           ...prev[overColumn],
           {
             ...currentTask,
             status: overColumn,
-            statusColor: getStatusColor(overColumn), // instantly set color
+            statusColor: getStatusColor(overColumn),
           },
         ],
       }))
@@ -141,7 +138,8 @@ export function TaskBoard({
   return (
     <DndContext
       sensors={sensors}
-      collisionDetection={closestCorners}
+      // CHANGE #1: Use rectIntersection instead of closestCorners
+      collisionDetection={rectIntersection}
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
       onDragCancel={handleDragCancel}
@@ -173,7 +171,15 @@ export function TaskBoard({
       <DragOverlay>
         {activeId ? (
           <div className="transform rotate-3 opacity-80">
-            <TaskCard task={findTaskAll(activeId)!} onClick={() => {}} />
+            <TaskCard
+              task={findTaskAll(activeId)!}
+              onClick={() => {
+                const t = findTaskAll(activeId!)
+                if (t) {
+                  onTaskClick(t)
+                }
+              }}
+            />
           </div>
         ) : null}
       </DragOverlay>
